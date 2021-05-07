@@ -207,6 +207,9 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                     WifiAPI.onReceiveWifiScanInfo(this, context, intent);
                 }
                 break;
+            case "WifiScanNow":
+                WifiAPI.onReceiveWifiScanNow(this, context, intent);
+                break;
             case "WifiEnable":
                 WifiAPI.onReceiveWifiEnable(this, context, intent);
                 break;

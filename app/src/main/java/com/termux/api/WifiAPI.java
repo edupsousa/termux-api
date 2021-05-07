@@ -1,19 +1,25 @@
 package com.termux.api;
 
 import android.annotation.SuppressLint;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.location.LocationManager;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.text.format.Formatter;
 import android.util.JsonWriter;
 
 import com.termux.api.util.ResultReturner;
+import com.termux.api.util.TermuxApiLogger;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class WifiAPI {
@@ -51,67 +57,111 @@ public class WifiAPI {
         return lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
     }
 
+    static void onReceiveWifiScanNow(TermuxApiReceiver apiReceiver, final Context context, final Intent intent) {
+        ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultJsonWriter() {
+            @Override
+            public void writeJson(JsonWriter out) throws Exception {
+                Looper.prepare();
+                final Looper looper = Looper.myLooper();
+                WifiManager manager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                BroadcastReceiver scanReceiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        List<ScanResult> list = manager.getScanResults();
+                        try {
+                            out.beginObject().name("result");
+                            writeScanResults(out, list, context);
+                            out.endObject();
+                        } catch (Exception e) {
+                            TermuxApiLogger.error("Exception on receive wifi scan now:", e);
+                        }
+                        if (looper != null) looper.quit();
+                    }
+                };
+                IntentFilter scanIntentFilter = new IntentFilter();
+                scanIntentFilter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+                context.getApplicationContext().registerReceiver(scanReceiver, scanIntentFilter);
+                if (manager.startScan()) {
+                    Looper.loop();
+                } else {
+                    out
+                        .beginObject()
+                        .name("error")
+                        .value(true)
+                        .name("description")
+                        .value("Error starting scan. Possible throttle down by the OS.")
+                        .endObject();
+                }
+            }
+        });
+        TermuxApiLogger.info("onReceiveWifiScanNow: end");
+    }
+
     static void onReceiveWifiScanInfo(TermuxApiReceiver apiReceiver, final Context context, final Intent intent) {
         ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultJsonWriter() {
             @Override
             public void writeJson(JsonWriter out) throws Exception {
                 WifiManager manager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
                 List<ScanResult> scans = manager.getScanResults();
-                if (scans == null) {
-                    out.beginObject().name("API_ERROR").value("Failed getting scan results").endObject();
-                } else if (scans.isEmpty() && !isLocationEnabled(context)) {
-                    // https://issuetracker.google.com/issues/37060483:
-                    // "WifiManager#getScanResults() returns an empty array list if GPS is turned off"
-                    String errorMessage = "Location needs to be enabled on the device";
-                    out.beginObject().name("API_ERROR").value(errorMessage).endObject();
-                } else {
-                    out.beginArray();
-                    for (ScanResult scan : scans) {
-                        out.beginObject();
-                        out.name("bssid").value(scan.BSSID);
-                        out.name("frequency_mhz").value(scan.frequency);
-                        out.name("rssi").value(scan.level);
-                        out.name("ssid").value(scan.SSID);
-                        out.name("timestamp").value(scan.timestamp);
-
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            int channelWidth = scan.channelWidth;
-                            String channelWidthMhz = "???";
-                            switch (channelWidth) {
-                                case ScanResult.CHANNEL_WIDTH_20MHZ:
-                                    channelWidthMhz = "20";
-                                    break;
-                                case ScanResult.CHANNEL_WIDTH_40MHZ:
-                                    channelWidthMhz = "40";
-                                    break;
-                                case ScanResult.CHANNEL_WIDTH_80MHZ:
-                                    channelWidthMhz = "80";
-                                    break;
-                                case ScanResult.CHANNEL_WIDTH_80MHZ_PLUS_MHZ:
-                                    channelWidthMhz = "80+80";
-                                    break;
-                                case ScanResult.CHANNEL_WIDTH_160MHZ:
-                                    channelWidthMhz = "160";
-                                    break;
-                            }
-                            out.name("channel_bandwidth_mhz").value(channelWidthMhz);
-                            if (channelWidth != ScanResult.CHANNEL_WIDTH_20MHZ) {
-                                // centerFreq0 says "Not used if the AP bandwidth is 20 MHz".
-                                out.name("center_frequency_mhz").value(scan.centerFreq0);
-                            }
-                            if (!TextUtils.isEmpty(scan.operatorFriendlyName)) {
-                                out.name("operator_name").value(scan.operatorFriendlyName.toString());
-                            }
-                            if (!TextUtils.isEmpty(scan.venueName)) {
-                                out.name("venue_name").value(scan.venueName.toString());
-                            }
-                        }
-                        out.endObject();
-                    }
-                    out.endArray();
-                }
+                writeScanResults(out, scans, context);
             }
         });
+    }
+
+    private static void writeScanResults(JsonWriter out, List<ScanResult> scans, Context context) throws IOException {
+        if (scans == null) {
+            out.beginObject().name("API_ERROR").value("Failed getting scan results").endObject();
+        } else if (scans.isEmpty() && !isLocationEnabled(context)) {
+            // https://issuetracker.google.com/issues/37060483:
+            // "WifiManager#getScanResults() returns an empty array list if GPS is turned off"
+            String errorMessage = "Location needs to be enabled on the device";
+            out.beginObject().name("API_ERROR").value(errorMessage).endObject();
+        } else {
+            out.beginArray();
+            for (ScanResult scan : scans) {
+                out.beginObject();
+                out.name("bssid").value(scan.BSSID);
+                out.name("frequency_mhz").value(scan.frequency);
+                out.name("rssi").value(scan.level);
+                out.name("ssid").value(scan.SSID);
+                out.name("timestamp").value(scan.timestamp);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    int channelWidth = scan.channelWidth;
+                    String channelWidthMhz = "???";
+                    switch (channelWidth) {
+                        case ScanResult.CHANNEL_WIDTH_20MHZ:
+                            channelWidthMhz = "20";
+                            break;
+                        case ScanResult.CHANNEL_WIDTH_40MHZ:
+                            channelWidthMhz = "40";
+                            break;
+                        case ScanResult.CHANNEL_WIDTH_80MHZ:
+                            channelWidthMhz = "80";
+                            break;
+                        case ScanResult.CHANNEL_WIDTH_80MHZ_PLUS_MHZ:
+                            channelWidthMhz = "80+80";
+                            break;
+                        case ScanResult.CHANNEL_WIDTH_160MHZ:
+                            channelWidthMhz = "160";
+                            break;
+                    }
+                    out.name("channel_bandwidth_mhz").value(channelWidthMhz);
+                    if (channelWidth != ScanResult.CHANNEL_WIDTH_20MHZ) {
+                        // centerFreq0 says "Not used if the AP bandwidth is 20 MHz".
+                        out.name("center_frequency_mhz").value(scan.centerFreq0);
+                    }
+                    if (!TextUtils.isEmpty(scan.operatorFriendlyName)) {
+                        out.name("operator_name").value(scan.operatorFriendlyName.toString());
+                    }
+                    if (!TextUtils.isEmpty(scan.venueName)) {
+                        out.name("venue_name").value(scan.venueName.toString());
+                    }
+                }
+                out.endObject();
+            }
+            out.endArray();
+        }
     }
 
     static void onReceiveWifiEnable(TermuxApiReceiver apiReceiver, final Context context, final Intent intent) {
